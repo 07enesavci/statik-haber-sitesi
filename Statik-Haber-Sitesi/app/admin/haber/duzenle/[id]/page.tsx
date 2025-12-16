@@ -1,0 +1,783 @@
+'use client'
+
+import { useState, useEffect } from 'react'
+import { useRouter, useParams } from 'next/navigation'
+import Link from 'next/link'
+import AdminHeader from '@/components/AdminHeader'
+
+interface MediaItem {
+  type: 'image' | 'video'
+  file?: File
+  url?: string
+  preview?: string
+  existing?: boolean // Mevcut görsel mi?
+}
+
+export default function EditNews() {
+  const router = useRouter()
+  const params = useParams()
+  const id = params.id as string
+  
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [formData, setFormData] = useState({
+    title: '',
+    content: '',
+    fullContent: '',
+    link: '',
+    isPinned: false,
+    isFeatured: false
+  })
+  const [images, setImages] = useState<MediaItem[]>([])
+  const [imageUrls, setImageUrls] = useState<string[]>([''])
+  const [videoFiles, setVideoFiles] = useState<MediaItem[]>([])
+  const [videoUrls, setVideoUrls] = useState<string[]>([''])
+  const [uploadingMedia, setUploadingMedia] = useState(false)
+
+  useEffect(() => {
+    fetchNews()
+  }, [id])
+
+  const fetchNews = async () => {
+    try {
+      const response = await fetch(`/api/news/${id}`)
+      if (response.ok) {
+        const news = await response.json()
+        setFormData({
+          title: news.title,
+          content: news.content,
+          fullContent: news.fullContent,
+          link: news.link || '',
+          isPinned: news.isPinned || false,
+          isFeatured: news.isFeatured || false
+        })
+
+        // Load existing images
+        const existingImages: MediaItem[] = []
+        if (news.images && news.images.length > 0) {
+          news.images.forEach((img: string) => {
+            existingImages.push({
+              type: 'image',
+              url: `/uploads/${img}`,
+              existing: true
+            })
+          })
+        }
+        if (news.imageUrls && news.imageUrls.length > 0) {
+          news.imageUrls.forEach((imgUrl: string) => {
+            existingImages.push({
+              type: 'image',
+              url: imgUrl,
+              existing: true
+            })
+          })
+        }
+        // Backward compatibility
+        if (news.image && !existingImages.find(img => img.url === `/uploads/${news.image}`)) {
+          existingImages.unshift({
+            type: 'image',
+            url: `/uploads/${news.image}`,
+            existing: true
+          })
+        }
+        if (news.imageUrl && !existingImages.find(img => img.url === news.imageUrl)) {
+          existingImages.unshift({
+            type: 'image',
+            url: news.imageUrl,
+            existing: true
+          })
+        }
+        setImages(existingImages)
+
+        // Load videos - separate file videos and URL videos
+        const existingVideoFiles: MediaItem[] = []
+        const existingVideoUrls: string[] = []
+        
+        if (news.videos && news.videos.length > 0) {
+          news.videos.forEach((video: string) => {
+            if (video.startsWith('/uploads/')) {
+              // It's a file path
+              existingVideoFiles.push({
+                type: 'video',
+                url: video,
+                existing: true
+              })
+            } else {
+              // It's a URL
+              existingVideoUrls.push(video)
+            }
+          })
+        }
+        
+        setVideoFiles(existingVideoFiles)
+        if (existingVideoUrls.length > 0) {
+          setVideoUrls(existingVideoUrls)
+        } else {
+          setVideoUrls([''])
+        }
+      } else {
+        setError('Haber bulunamadı')
+      }
+    } catch (err) {
+      setError('Haber yüklenirken bir hata oluştu')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }))
+  }
+
+  const handleMultipleImagesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    const newImages: MediaItem[] = files.map(file => {
+      const preview = URL.createObjectURL(file)
+      return {
+        type: 'image',
+        file,
+        preview
+      }
+    })
+    setImages(prev => [...prev, ...newImages])
+  }
+
+  const handleVideoFilesChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || [])
+    const newVideos: MediaItem[] = files.map(file => {
+      const preview = URL.createObjectURL(file)
+      return {
+        type: 'video',
+        file,
+        preview
+      }
+    })
+    setVideoFiles(prev => [...prev, ...newVideos])
+  }
+
+  const handleVideoUrlChange = (index: number, value: string) => {
+    const newVideos = [...videoUrls]
+    newVideos[index] = value
+    setVideoUrls(newVideos)
+  }
+
+  const addVideoUrl = () => {
+    setVideoUrls([...videoUrls, ''])
+  }
+
+  const removeVideoUrl = (index: number) => {
+    setVideoUrls(videoUrls.filter((_, i) => i !== index))
+  }
+
+  const removeVideoFile = (index: number) => {
+    if (videoFiles[index].preview) {
+      URL.revokeObjectURL(videoFiles[index].preview!)
+    }
+    setVideoFiles(videoFiles.filter((_, i) => i !== index))
+  }
+
+  const removeImage = (index: number) => {
+    if (images[index].preview) {
+      URL.revokeObjectURL(images[index].preview!)
+    }
+    setImages(images.filter((_, i) => i !== index))
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setError('')
+    setSaving(true)
+    setUploadingMedia(true)
+
+    try {
+      const uploadedImages: string[] = []
+      const uploadedImageUrls: string[] = []
+
+      // Get existing image filenames (from /uploads/ paths)
+      const existingImageFiles = images
+        .filter(img => img.existing && img.url?.startsWith('/uploads/'))
+        .map(img => img.url!.replace('/uploads/', ''))
+
+      uploadedImages.push(...existingImageFiles)
+
+      // Get existing image URLs
+      const existingImageUrls = images
+        .filter(img => img.existing && img.url && !img.url.startsWith('/uploads/'))
+        .map(img => img.url!)
+
+      uploadedImageUrls.push(...existingImageUrls)
+
+      // Upload new images
+      const newImageFiles = images.filter(img => img.file && !img.existing).map(img => img.file!)
+      if (newImageFiles.length > 0) {
+        const formDataUpload = new FormData()
+        newImageFiles.forEach(file => {
+          formDataUpload.append('files', file)
+        })
+
+        const uploadResponse = await fetch('/api/upload/multiple', {
+          method: 'POST',
+          body: formDataUpload
+        })
+
+        if (uploadResponse.ok) {
+          const uploadData = await uploadResponse.json()
+          uploadedImages.push(...uploadData.files.filter((f: any) => f.type === 'image').map((f: any) => f.filename))
+        } else {
+          throw new Error('Görseller yüklenirken bir hata oluştu')
+        }
+      }
+
+      // Add URL images
+      const validImageUrls = imageUrls.filter(url => url.trim() !== '')
+      uploadedImageUrls.push(...validImageUrls)
+
+      // Handle videos - get existing video files
+      const existingVideoFiles = videoFiles
+        .filter(vid => vid.existing && vid.url?.startsWith('/uploads/'))
+        .map(vid => vid.url!)
+
+      // Upload new video files
+      const uploadedVideoFiles: string[] = []
+      const newVideoFiles = videoFiles.filter(vid => vid.file && !vid.existing).map(vid => vid.file!)
+      
+      if (newVideoFiles.length > 0) {
+        const formDataVideo = new FormData()
+        newVideoFiles.forEach(file => {
+          formDataVideo.append('files', file)
+        })
+
+        const uploadVideoResponse = await fetch('/api/upload/multiple', {
+          method: 'POST',
+          body: formDataVideo
+        })
+
+        if (uploadVideoResponse.ok) {
+          const uploadVideoData = await uploadVideoResponse.json()
+          uploadedVideoFiles.push(...uploadVideoData.files.filter((f: any) => f.type === 'video').map((f: any) => `/uploads/${f.filename}`))
+        } else {
+          throw new Error('Videolar yüklenirken bir hata oluştu')
+        }
+      }
+
+      // Filter empty video URLs
+      const validVideoUrls = videoUrls.filter(v => v.trim() !== '')
+      
+      // Combine all videos (existing files + new files + URLs)
+      const allVideos = [...existingVideoFiles, ...uploadedVideoFiles, ...validVideoUrls]
+
+      // Get first image for main image (backward compatibility)
+      const firstImage = uploadedImages.length > 0
+        ? `/uploads/${uploadedImages[0]}`
+        : uploadedImageUrls.length > 0
+        ? uploadedImageUrls[0]
+        : undefined
+
+      // Update news
+      const response = await fetch(`/api/news/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ...formData,
+          image: uploadedImages[0] || undefined,
+          imageUrl: uploadedImageUrls[0] || undefined,
+          images: uploadedImages.length > 0 ? uploadedImages : undefined,
+          imageUrls: uploadedImageUrls.length > 0 ? uploadedImageUrls : undefined,
+          videos: allVideos.length > 0 ? allVideos : undefined,
+          isPinned: formData.isPinned || undefined,
+          isFeatured: formData.isFeatured || undefined
+        }),
+      })
+
+      if (response.ok) {
+        router.push('/admin')
+      } else {
+        const data = await response.json()
+        setError(data.error || 'Haber güncellenirken bir hata oluştu')
+      }
+    } catch (err: any) {
+      setError(err.message || 'Bir hata oluştu. Lütfen tekrar deneyin.')
+    } finally {
+      setSaving(false)
+      setUploadingMedia(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="content-wrapper" style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center'
+      }}>
+        <div style={{ textAlign: 'center' }}>
+          <p style={{ fontSize: '18px', color: 'var(--text-light)' }}>
+            Yükleniyor...
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="content-wrapper" style={{ minHeight: '100vh' }}>
+      <AdminHeader 
+        title="Haberi Düzenle" 
+        backUrl="/admin"
+      />
+
+          {/* Main Content */}
+          <main style={{ padding: 'clamp(20px, 5vw, 40px) 0', position: 'relative', zIndex: 1 }}>
+            <div className="container" style={{ maxWidth: '800px' }}>
+              <div className="modern-card" style={{
+                padding: 'clamp(24px, 6vw, 48px)'
+              }}>
+            {error && (
+              <div style={{
+                backgroundColor: '#ffebee',
+                color: 'var(--error-color)',
+                padding: '12px',
+                borderRadius: '4px',
+                marginBottom: '20px',
+                fontSize: '14px'
+              }}>
+                {error}
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit}>
+              <div className="form-group">
+                <label htmlFor="title">Haber Başlığı *</label>
+                <input
+                  type="text"
+                  id="title"
+                  name="title"
+                  value={formData.title}
+                  onChange={handleInputChange}
+                  required
+                  disabled={saving}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="content">Haber Özeti *</label>
+                <textarea
+                  id="content"
+                  name="content"
+                  value={formData.content}
+                  onChange={handleInputChange}
+                  required
+                  disabled={saving}
+                  rows={4}
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="fullContent">Haber İçeriği (Tam Metin) *</label>
+                <textarea
+                  id="fullContent"
+                  name="fullContent"
+                  value={formData.fullContent}
+                  onChange={handleInputChange}
+                  required
+                  disabled={saving}
+                  rows={12}
+                  style={{ fontFamily: 'inherit' }}
+                />
+              </div>
+
+              {/* Çoklu Görsel Yükleme */}
+              <div className="form-group">
+                <label>Görseller (Ana sayfada ilk görsel gösterilir)</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleMultipleImagesChange}
+                  disabled={saving || uploadingMedia}
+                  style={{ marginBottom: '12px' }}
+                />
+                <small style={{ color: 'var(--text-light)', fontSize: '12px', display: 'block', marginBottom: '12px' }}>
+                  Birden fazla görsel seçebilirsiniz. Ana sayfada ilk görsel gösterilecektir.
+                </small>
+
+                {/* Eklenen görselleri göster */}
+                {images.length > 0 && (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))',
+                    gap: '12px',
+                    marginTop: '16px'
+                  }}>
+                    {images.map((img, index) => (
+                      <div key={index} style={{
+                        position: 'relative',
+                        borderRadius: '8px',
+                        overflow: 'hidden',
+                        border: '2px solid var(--border-color)',
+                        aspectRatio: '1'
+                      }}>
+                        <img
+                          src={img.preview || img.url}
+                          alt={`Preview ${index + 1}`}
+                          style={{
+                            width: '100%',
+                            height: '100%',
+                            objectFit: 'cover'
+                          }}
+                        />
+                        {index === 0 && (
+                          <div style={{
+                            position: 'absolute',
+                            top: '4px',
+                            left: '4px',
+                            backgroundColor: 'rgba(102, 126, 234, 0.9)',
+                            color: 'white',
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            fontSize: '11px',
+                            fontWeight: 'bold'
+                          }}>
+                            ANA GÖRSEL
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => removeImage(index)}
+                          style={{
+                            position: 'absolute',
+                            top: '4px',
+                            right: '4px',
+                            backgroundColor: 'var(--error-color)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '24px',
+                            height: '24px',
+                            cursor: 'pointer',
+                            fontSize: '16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            lineHeight: '1'
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Görsel URL'leri */}
+              <div className="form-group">
+                <label>Görsel URL'leri (Opsiyonel)</label>
+                {imageUrls.map((url, index) => (
+                  <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                    <input
+                      type="url"
+                      placeholder="https://example.com/image.jpg"
+                      value={url}
+                      onChange={(e) => {
+                        const newUrls = [...imageUrls]
+                        newUrls[index] = e.target.value
+                        setImageUrls(newUrls)
+                      }}
+                      disabled={saving}
+                      style={{ flex: 1 }}
+                    />
+                    {imageUrls.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setImageUrls(imageUrls.filter((_, i) => i !== index))}
+                        style={{
+                          backgroundColor: 'var(--error-color)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          padding: '8px 16px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Kaldır
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setImageUrls([...imageUrls, ''])}
+                  disabled={saving}
+                  style={{
+                    backgroundColor: 'var(--bg-color)',
+                    color: 'var(--text-color)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    marginTop: '8px'
+                  }}
+                >
+                  + Görsel URL Ekle
+                </button>
+              </div>
+
+              {/* Video Dosyaları */}
+              <div className="form-group">
+                <label>Video Dosyaları (Opsiyonel)</label>
+                <input
+                  type="file"
+                  accept="video/*"
+                  multiple
+                  onChange={handleVideoFilesChange}
+                  disabled={saving || uploadingMedia}
+                  style={{ marginBottom: '12px' }}
+                />
+                <small style={{ color: 'var(--text-light)', fontSize: '12px', display: 'block', marginBottom: '12px' }}>
+                  Birden fazla video dosyası seçebilirsiniz (Max: 50MB)
+                </small>
+
+                {/* Eklenen video dosyalarını göster */}
+                {videoFiles.length > 0 && (
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                    gap: '12px',
+                    marginTop: '16px'
+                  }}>
+                    {videoFiles.map((video, index) => (
+                      <div key={index} style={{
+                        position: 'relative',
+                        borderRadius: '8px',
+                        overflow: 'hidden',
+                        border: '2px solid var(--border-color)',
+                        backgroundColor: '#000'
+                      }}>
+                        <video
+                          src={video.preview || video.url}
+                          style={{
+                            width: '100%',
+                            height: 'auto',
+                            maxHeight: '150px',
+                            display: 'block'
+                          }}
+                          controls
+                          muted
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeVideoFile(index)}
+                          style={{
+                            position: 'absolute',
+                            top: '4px',
+                            right: '4px',
+                            backgroundColor: 'var(--error-color)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '24px',
+                            height: '24px',
+                            cursor: 'pointer',
+                            fontSize: '16px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            lineHeight: '1'
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Video URL'leri */}
+              <div className="form-group">
+                <label>Video URL'leri (YouTube, Vimeo vb.) (Opsiyonel)</label>
+                {videoUrls.map((video, index) => (
+                  <div key={index} style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                    <input
+                      type="url"
+                      placeholder="https://youtube.com/watch?v=... veya video URL'i"
+                      value={video}
+                      onChange={(e) => handleVideoUrlChange(index, e.target.value)}
+                      disabled={saving}
+                      style={{ flex: 1 }}
+                    />
+                    {videoUrls.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => removeVideoUrl(index)}
+                        style={{
+                          backgroundColor: 'var(--error-color)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '4px',
+                          padding: '8px 16px',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        Kaldır
+                      </button>
+                    )}
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={addVideoUrl}
+                  disabled={saving}
+                  style={{
+                    backgroundColor: 'var(--bg-color)',
+                    color: 'var(--text-color)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    padding: '8px 16px',
+                    cursor: 'pointer',
+                    fontSize: '14px',
+                    marginTop: '8px'
+                  }}
+                >
+                  + Video URL Ekle
+                </button>
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="link">İlgili Link (Opsiyonel)</label>
+                <input
+                  type="url"
+                  id="link"
+                  name="link"
+                  value={formData.link}
+                  onChange={handleInputChange}
+                  disabled={saving}
+                  placeholder="https://example.com"
+                />
+              </div>
+
+              {/* Özel Ayarlar */}
+              <div style={{
+                marginTop: '30px',
+                padding: '24px',
+                background: 'linear-gradient(135deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%)',
+                borderRadius: '12px',
+                border: '1px solid rgba(102, 126, 234, 0.1)'
+              }}>
+                <h3 className="gradient-text" style={{
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  marginBottom: '16px'
+                }}>
+                  Özel Ayarlar
+                </h3>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <label style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    cursor: 'pointer'
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={formData.isPinned}
+                      onChange={(e) => setFormData(prev => ({ ...prev, isPinned: e.target.checked }))}
+                      disabled={saving}
+                      style={{
+                        width: '20px',
+                        height: '20px',
+                        cursor: 'pointer',
+                        accentColor: 'var(--primary-color)'
+                      }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: '600', color: 'var(--text-color)' }}>
+                        📌 Sabit Duyuru Olarak İşaretle
+                      </div>
+                      <small style={{ color: 'var(--text-light)', fontSize: '12px' }}>
+                        Bu haber ana sayfanın en üstünde sabit duyuru olarak gösterilecektir
+                      </small>
+                    </div>
+                  </label>
+
+                  <label style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    cursor: 'pointer'
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={formData.isFeatured}
+                      onChange={(e) => setFormData(prev => ({ ...prev, isFeatured: e.target.checked }))}
+                      disabled={saving}
+                      style={{
+                        width: '20px',
+                        height: '20px',
+                        cursor: 'pointer',
+                        accentColor: 'var(--primary-color)'
+                      }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: '600', color: 'var(--text-color)' }}>
+                        ⭐ Öne Çıkan Haber Olarak İşaretle
+                      </div>
+                      <small style={{ color: 'var(--text-light)', fontSize: '12px' }}>
+                        Bu haber öne çıkanlar bölümünde gösterilecektir
+                      </small>
+                    </div>
+                  </label>
+                </div>
+              </div>
+
+              <div style={{
+                display: 'flex',
+                gap: '12px',
+                marginTop: '30px'
+              }}>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={saving || uploadingMedia}
+                  style={{
+                    background: (saving || uploadingMedia) ? 'var(--text-light)' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                    border: 'none',
+                    boxShadow: (saving || uploadingMedia) ? 'none' : '0 4px 15px rgba(102, 126, 234, 0.4)',
+                    fontSize: '16px',
+                    fontWeight: '600'
+                  }}
+                >
+                  {uploadingMedia ? 'Görseller yükleniyor...' : saving ? 'Kaydediliyor...' : 'Değişiklikleri Kaydet'}
+                </button>
+                <Link
+                  href="/admin"
+                  className="btn"
+                  style={{
+                    backgroundColor: 'var(--bg-color)',
+                    color: 'var(--text-color)',
+                    textDecoration: 'none',
+                    display: 'inline-block',
+                    border: '1px solid var(--border-color)'
+                  }}
+                >
+                  İptal
+                </Link>
+              </div>
+            </form>
+          </div>
+        </div>
+      </main>
+    </div>
+  )
+}
