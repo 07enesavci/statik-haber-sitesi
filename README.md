@@ -23,7 +23,7 @@ Modern ve kullanıcı dostu bir haber sitesi. Next.js 14, React ve TypeScript il
 
 1. Projeyi klonlayın:
 ```bash
-git clone https://github.com/07enesavci/haber-sitesi.git
+git clone https://github.com/07enesavci/statik-haber-sitesi.git
 cd haber-sitesi
 ```
 
